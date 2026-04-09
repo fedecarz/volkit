@@ -20,7 +20,7 @@ A Python library for volatility analytics.
 
 ## Installation
 ```bash
-git clone https://github.com/YOUR_USERNAME/volkit.git
+git clone https://github.com/fedecarz/volkit.git
 cd volkit
 pip install -e .
 ```
