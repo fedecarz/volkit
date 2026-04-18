@@ -77,6 +77,12 @@ Three modes: `vix_adjusted` (recommended), `vix_raw` (historical analysis), `sca
 ## Installation
 
 ```bash
+pip install git+https://github.com/fedecarz/volkit.git
+```
+
+For local development:
+
+```bash
 git clone https://github.com/fedecarz/volkit.git
 cd volkit
 pip install -e .
