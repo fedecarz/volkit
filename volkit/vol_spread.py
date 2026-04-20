@@ -29,20 +29,26 @@ def realized_vol(price_history: pd.DataFrame, window: int = 21, trading_days: in
 
 # ATM implied volatility ------------------------
 
-def atm_implied_vol(options: pd.DataFrame, spot: float, expiry: str = None) -> float:
+def atm_implied_vol(options: pd.DataFrame, spot: float, expiry: str = None, use_solver: bool = True) -> float:
     """
     Extract the at-the-money implied volatility from the options chain. Finds the strike closest to spot and returns its IV. Uses the average of call and put IV at that strike.
     Params
     options : cleaned options DataFrame from market_data
     spot    : current spot price
     expiry  : specific expiry to use, or None to use nearest expiry
+    use_solver : if True, compute IV using Newton-Raphson solver
+                 if False, use implied_volatility column from the data provider
     """
 
+    from volkit.utils import get_risk_free_rate
+    r = get_risk_free_rate()
+    
     if expiry is not None:
         df = options[options["expiry"] == expiry].copy()
     else:       # Use nearest expiry
         expiries = sorted(options["expiry"].unique())
         df = options[options["expiry"] == expiries[0]].copy()
+        expiry = expiries[0]    # needed for using the IV solver
     
     if df.empty:
         return np.nan
@@ -52,18 +58,38 @@ def atm_implied_vol(options: pd.DataFrame, spot: float, expiry: str = None) -> f
     atm_strike = df.loc[df["distance"].idxmin(), "strike"]
     atm_options = df[df["strike"] == atm_strike]
 
-    # average call and put IV at ATM strike
-    iv_values = atm_options["implied_volatility"].dropna()
+    if use_solver:
+        from volkit.iv_surface import implied_volatility as iv_solver
+        T = (datetime.strptime(expiry, "%Y-%m-%d") - datetime.today()).days / 365
+        
+        if T<=0:
+            return np.nan
+        
+        row_call = atm_options[atm_options["option_type"] == "call"]
+        row_put  = atm_options[atm_options["option_type"] == "put"]
+        iv_call = np.nan
+        iv_put  = np.nan
 
-    if iv_values.empty:
-        return np.nan
-    
-    return float(iv_values.mean())
+        if not row_call.empty:
+            iv_call = iv_solver(row_call.iloc[0]["mid"], spot, atm_strike, T, r, "call")
+        if not row_put.empty:
+            iv_put = iv_solver(row_put.iloc[0]["mid"], spot, atm_strike, T, r, "put")
+
+        # average call and put if both available, otherwise use whichever converged
+        values = [v for v in [iv_call, iv_put] if not np.isnan(v)]
+        return float(np.mean(values)) if values else np.nan
+    else:
+        # use implied_volatility column from provider — faster, no solver needed
+        iv_values = atm_options["implied_volatility"].dropna()
+        if iv_values.empty:
+            return np.nan
+        return float(iv_values.mean())
 
 # Vol spread -----------------------------------------------------
 
 """
-we need a daily historical IV series. The ideal approach would be to run the IV solver on historical options chain data, computing ATM IV for each past trading day. However, Yahoo Finance does not provide historical options chains and other providers limit api calls. We cannot directly reconstruct a daily IV time series from Yahoo data. 
+we need a daily historical IV series. The ideal approach would be to run the IV solver on historical options chain data, computing ATM IV for each past trading day.
+However, Yahoo Finance does not provide historical options chains and other providers limit api calls. We cannot directly reconstruct a daily IV time series from Yahoo data. 
 -> use VIX as a proxy for historical IV.
 
 Basis Adjustment
@@ -72,10 +98,11 @@ the solver computes ATM IV from specific data that will differ from VIX due to:
 - Different strike selection and expiry
 - Different interpolation
 
-we measure the difference (basis) today and apply it as a correction to the historical VIX series: the result is a historically consistent IV series that reflects the solver's calibration. The spread IV_adjusted(t) - RV(t) is then a more precise estimate of the variance risk premium over time.
+we measure the difference (basis) today and apply it as a correction to the historical VIX series: the result is a historically consistent IV series that reflects the solver's calibration.
+The spread IV_adjusted(t) - RV(t) is then a more precise estimate of the variance risk premium over time.
 """
 
-def compute_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot: float, iv: float = None, window: int = 21, mode: str = "vix_adjusted", expiry: str = None) -> pd.DataFrame:
+def compute_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot: float, iv: float = None, window: int = 21, mode: str = "vix_adjusted", expiry: str = None,  use_solver: bool = True) -> pd.DataFrame:
     """
     Compute the vol spread (IV - realized vol) over time -> time series of the variance risk premium (VRP).
     Params:
@@ -89,6 +116,8 @@ def compute_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot:
                         "vix_raw"      — raw VIX history with no adjustment
                         "scalar"       — single IV value as flat line
     expiry        : specific expiry for ATM IV extraction, or None for nearest
+    use_solver : if True, compute IV using Newton-Raphson solver
+                 if False, use implied_volatility column from the data provider
     """
 
     import yfinance as yf
@@ -112,7 +141,7 @@ def compute_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot:
 
         if mode == "vix_adjusted":
             # compute our ATM IV today using the solver
-            iv_today = iv if iv is not None else atm_implied_vol(options, spot, expiry)
+            iv_today = iv if iv is not None else atm_implied_vol(options, spot, expiry, use_solver=use_solver)
 
             if np.isnan(iv_today):
                 raise ValueError(
@@ -136,7 +165,7 @@ def compute_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot:
 
     elif mode == "scalar":
         # single IV value applied to all dates
-        iv_today  = iv if iv is not None else atm_implied_vol(options, spot, expiry)
+        iv_today  = iv if iv is not None else atm_implied_vol(options, spot, expiry, use_solver=use_solver)
         iv_series = iv_today
     else:
         raise ValueError(f"Unknown mode '{mode}'. Choose one of: 'vix_adjusted', 'vix_raw', 'scalar'.")
@@ -228,7 +257,7 @@ def plot_vol_spread(spread_df: pd.DataFrame, ticker: str = "", window: float = 2
 
 # Convenience ----------------------
 
-def analyze_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot: float, ticker: str = "", window: int = 21, expiry: str = None, mode: str = "vix_adjusted", rich_threshold: float = 0.02):
+def analyze_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot: float, ticker: str = "", window: int = 21, expiry: str = None, mode: str = "vix_adjusted", rich_threshold: float = 0.02,  use_solver: bool = True):
     """
     Full vol spread analysis in one call. Computes ATM IV, rolling realized vol, the spread, prints a summary, and plots everything.
     Params
@@ -243,14 +272,16 @@ def analyze_vol_spread(price_history: pd.DataFrame, options: pd.DataFrame, spot:
                         "vix_raw"      — raw VIX history with no adjustment
                         "scalar"       — single IV value as flat line
     rich_threshold  : spread threshold to flag regimes
+    use_solver : if True, compute IV using Newton-Raphson solver
+                 if False, use implied_volatility column from the data provider
     """
     # extract ATM IV from the options chain
-    iv = atm_implied_vol(options, spot, expiry)
+    iv = atm_implied_vol(options, spot, expiry, use_solver=use_solver)
 
     if np.isnan(iv):
         raise ValueError("Could not compute ATM implied volatility. Check options chain.")
 
-    spread_df = compute_vol_spread(price_history, options, spot, iv, window, mode, expiry)
+    spread_df = compute_vol_spread(price_history, options, spot, iv, window, mode, expiry, use_solver=use_solver)
 
     # summary statistics
     current_rv     = spread_df["realized_vol"].iloc[-1]
