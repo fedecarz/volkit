@@ -26,7 +26,7 @@ def implied_volatility(
     S: float,
     K: float,
     T: float,
-    r: float,
+    r = "market",
     option_type: str = "call",
     max_iterations: int = 100,
     tolerance: float = 1e-6,
@@ -39,11 +39,17 @@ def implied_volatility(
     S              : spot price
     K              : strike price
     T              : time to expiry in years
-    r              : risk-free rate
+    r              : "market" — fetch automatically from US 3-month T-bill (default)
+                     float    — use a fixed rate, e.g. r=0.05 for 5%
     option_type    : "call" or "put"
     max_iterations : maximum Newton-Raphson iterations
     tolerance      : convergence threshold
     """
+
+    if r == "market":
+        from volkit.utils import get_risk_free_rate
+        r = get_risk_free_rate()
+    
     if T <= 0:
         return np.nan
 
@@ -84,7 +90,7 @@ def implied_volatility(
 def build_iv_surface(
     options: pd.DataFrame,
     spot: float,
-    r: float = 0.05,
+    r = "market",
     as_of_date: str = None,
 ) -> pd.DataFrame:
     """
@@ -96,6 +102,11 @@ def build_iv_surface(
     r           : risk-free rate
     as_of_date  : historical date as "YYYY-MM-DD", or None for today
     """
+
+    if r == "market":
+        from volkit.utils import get_risk_free_rate
+        r = get_risk_free_rate()
+       
     today = datetime.strptime(as_of_date, "%Y-%m-%d") if as_of_date else datetime.today()
 
     # OTM convention — puts below spot, calls above spot
@@ -142,7 +153,7 @@ def build_iv_surface(
 def plot_surface(
     options: pd.DataFrame,
     spot: float,
-    r: float = 0.05,
+    r = "market",
     title: str = "Implied Volatility Surface",
     as_of_date: str = None,
 ):
@@ -150,6 +161,11 @@ def plot_surface(
     Build and plot the implied volatility surface using matplotlib.
     Opens in a separate window.
     """
+
+    if r == "market":
+        from volkit.utils import get_risk_free_rate
+        r = get_risk_free_rate()
+    
     surface_df = build_iv_surface(options, spot, r, as_of_date)
 
     if surface_df.empty:
